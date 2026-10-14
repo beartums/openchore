@@ -246,6 +246,38 @@ type createScheduleRequest struct {
 	RecurrenceStart    *string `json:"recurrence_start"`
 }
 
+// normalizeScheduleRequest fills defaults and validates the fields shared by
+// creating and updating a schedule. It returns an error message, or "" if the
+// request is valid.
+func normalizeScheduleRequest(req *createScheduleRequest) string {
+	if req.AssignedTo == 0 {
+		return "assigned_to is required"
+	}
+	if req.RecurrenceInterval != nil {
+		if *req.RecurrenceInterval < 1 {
+			return "recurrence_interval must be >= 1"
+		}
+		if req.RecurrenceStart == nil {
+			return "recurrence_start is required with recurrence_interval"
+		}
+	} else if req.DayOfWeek == nil && req.SpecificDate == nil {
+		return "day_of_week, specific_date, or recurrence_interval is required"
+	}
+	if req.PointsMultiplier == 0 {
+		req.PointsMultiplier = 1.0
+	}
+	if req.ExpiryPenalty == "" {
+		req.ExpiryPenalty = model.ExpiryBlock
+	}
+	if req.ExpiryPenalty != model.ExpiryBlock && req.ExpiryPenalty != model.ExpiryNoPoints && req.ExpiryPenalty != model.ExpiryPenalty {
+		return "expiry_penalty must be block, no_points, or penalty"
+	}
+	if req.ExpiryPenalty == model.ExpiryPenalty && req.ExpiryPenaltyValue <= 0 {
+		return "expiry_penalty_value must be positive for penalty mode"
+	}
+	return ""
+}
+
 func (h *ChoreHandler) CreateSchedule(w http.ResponseWriter, r *http.Request) {
 	choreID, err := urlParamInt64(r, "id")
 	if err != nil {
@@ -263,38 +295,11 @@ func (h *ChoreHandler) CreateSchedule(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if req.AssignedTo == 0 {
-		writeError(w, http.StatusBadRequest, "assigned_to is required")
-		return
-	}
-	if req.RecurrenceInterval != nil {
-		if *req.RecurrenceInterval < 1 {
-			writeError(w, http.StatusBadRequest, "recurrence_interval must be >= 1")
-			return
-		}
-		if req.RecurrenceStart == nil {
-			writeError(w, http.StatusBadRequest, "recurrence_start is required with recurrence_interval")
-			return
-		}
-	} else if req.DayOfWeek == nil && req.SpecificDate == nil {
-		writeError(w, http.StatusBadRequest, "day_of_week, specific_date, or recurrence_interval is required")
-		return
-	}
 	if req.AssignmentType == "" {
 		req.AssignmentType = "individual"
 	}
-	if req.PointsMultiplier == 0 {
-		req.PointsMultiplier = 1.0
-	}
-	if req.ExpiryPenalty == "" {
-		req.ExpiryPenalty = model.ExpiryBlock
-	}
-	if req.ExpiryPenalty != model.ExpiryBlock && req.ExpiryPenalty != model.ExpiryNoPoints && req.ExpiryPenalty != model.ExpiryPenalty {
-		writeError(w, http.StatusBadRequest, "expiry_penalty must be block, no_points, or penalty")
-		return
-	}
-	if req.ExpiryPenalty == model.ExpiryPenalty && req.ExpiryPenaltyValue <= 0 {
-		writeError(w, http.StatusBadRequest, "expiry_penalty_value must be positive for penalty mode")
+	if msg := normalizeScheduleRequest(&req); msg != "" {
+		writeError(w, http.StatusBadRequest, msg)
 		return
 	}
 
@@ -336,6 +341,74 @@ func (h *ChoreHandler) ListSchedules(w http.ResponseWriter, r *http.Request) {
 		schedules = []model.ChoreSchedule{}
 	}
 	writeJSON(w, http.StatusOK, schedules)
+}
+
+// UpdateSchedule edits a schedule in place: who it is assigned to, when it
+// recurs, its time window, penalty, multiplier and date range. Editing rather
+// than deleting and re-creating keeps the schedule's completion history,
+// which is deleted with the schedule (ON DELETE CASCADE). Each completion
+// records who did it, so reassigning does not rewrite past completions.
+//
+// The body is the full schedule, as for CreateSchedule. assignment_type and
+// fcfs_group_id cannot be changed here: first-come-first-served siblings are
+// linked by their group, so changing either would orphan or merge groups.
+func (h *ChoreHandler) UpdateSchedule(w http.ResponseWriter, r *http.Request) {
+	choreID, err := urlParamInt64(r, "id")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid chore id")
+		return
+	}
+	scheduleID, err := urlParamInt64(r, "scheduleID")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid schedule id")
+		return
+	}
+	existing, err := h.store.GetSchedule(r.Context(), scheduleID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to get schedule")
+		return
+	}
+	if existing == nil || existing.ChoreID != choreID {
+		writeError(w, http.StatusNotFound, "schedule not found")
+		return
+	}
+
+	var req createScheduleRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.AssignmentType != "" && req.AssignmentType != existing.AssignmentType {
+		writeError(w, http.StatusBadRequest, "assignment_type cannot be changed; delete and re-create the schedule")
+		return
+	}
+	if msg := normalizeScheduleRequest(&req); msg != "" {
+		writeError(w, http.StatusBadRequest, msg)
+		return
+	}
+	if u, err := h.store.GetUser(r.Context(), req.AssignedTo); err != nil || u == nil {
+		writeError(w, http.StatusBadRequest, "assigned_to is not a user")
+		return
+	}
+
+	updated := *existing
+	updated.AssignedTo = req.AssignedTo
+	updated.DayOfWeek = req.DayOfWeek
+	updated.SpecificDate = req.SpecificDate
+	updated.AvailableAt = req.AvailableAt
+	updated.DueBy = req.DueBy
+	updated.ExpiryPenalty = req.ExpiryPenalty
+	updated.ExpiryPenaltyValue = req.ExpiryPenaltyValue
+	updated.PointsMultiplier = req.PointsMultiplier
+	updated.StartDate = req.StartDate
+	updated.EndDate = req.EndDate
+	updated.RecurrenceInterval = req.RecurrenceInterval
+	updated.RecurrenceStart = req.RecurrenceStart
+	if err := h.store.UpdateSchedule(r.Context(), &updated); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to update schedule")
+		return
+	}
+	writeJSON(w, http.StatusOK, updated)
 }
 
 func (h *ChoreHandler) DeleteSchedule(w http.ResponseWriter, r *http.Request) {

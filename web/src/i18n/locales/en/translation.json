@@ -467,7 +467,9 @@
       "scheduleTypeTitle": "How often this chore repeats: weekly on specific days, every N days, or a single date.",
       "suffixDays": "days",
       "title": "Schedules",
-      "userFallback": "User {{id}}"
+      "userFallback": "User {{id}}",
+      "btnSaveChanges": "Save changes",
+      "ariaEditSchedule": "Edit schedule"
     },
     "settingsTab": {
       "ai": {

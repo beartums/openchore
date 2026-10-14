@@ -446,6 +446,21 @@ func (s *Store) CreateSchedule(ctx context.Context, cs *model.ChoreSchedule) err
 	return nil
 }
 
+// UpdateSchedule rewrites a schedule's editable fields. chore_id,
+// assignment_type and fcfs_group_id are left as they are.
+func (s *Store) UpdateSchedule(ctx context.Context, cs *model.ChoreSchedule) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE chore_schedules
+		    SET assigned_to = ?, day_of_week = ?, specific_date = ?, available_at = ?, points_multiplier = ?,
+		        start_date = ?, end_date = ?, recurrence_interval = ?, recurrence_start = ?, due_by = ?,
+		        expiry_penalty = ?, expiry_penalty_value = ?
+		  WHERE id = ?`,
+		cs.AssignedTo, cs.DayOfWeek, cs.SpecificDate, cs.AvailableAt, cs.PointsMultiplier,
+		cs.StartDate, cs.EndDate, cs.RecurrenceInterval, cs.RecurrenceStart, cs.DueBy,
+		cs.ExpiryPenalty, cs.ExpiryPenaltyValue, cs.ID)
+	return err
+}
+
 func (s *Store) DeleteSchedule(ctx context.Context, id int64) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM chore_schedules WHERE id = ?`, id)
 	return err
