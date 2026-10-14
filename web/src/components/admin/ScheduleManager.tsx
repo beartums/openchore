@@ -1,13 +1,14 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import clsx from 'clsx';
-import { Trash2, X } from 'lucide-react';
+import { Pencil, Trash2, X } from 'lucide-react';
 import { api } from '../../api';
 import type { User, ChoreSchedule } from '../../types';
 import { DAY_NAMES } from '../../types';
 import { toggleInArray } from '../../utils';
 import { Icon } from '../../design';
 import { PersonName, PersonToggle } from './pickers';
+import { planWeeklyEdit } from './scheduleEdit';
 import ui from './ui.module.css';
 import styles from './managers.module.css';
 
@@ -33,6 +34,8 @@ export const ScheduleManager: React.FC<{
   const [intervalDays, setIntervalDays] = useState('2');
   const [intervalStart, setIntervalStart] = useState(() => new Date().toISOString().slice(0, 10));
   const [saving, setSaving] = useState(false);
+  // The group being edited, or null when the form is adding.
+  const [editing, setEditing] = useState<Group | null>(null);
 
   const load = useCallback(async () => {
     const s = await api.chores.listSchedules(choreId);
@@ -46,6 +49,8 @@ export const ScheduleManager: React.FC<{
   };
 
   const toggleUser = (id: number) => {
+    // An edit moves existing schedules, so it has exactly one person.
+    if (editing) { setSelectedUsers([id]); return; }
     setSelectedUsers(prev => toggleInArray(prev, id));
   };
 
@@ -54,6 +59,77 @@ export const ScheduleManager: React.FC<{
       const same = prev.length === days.length && days.every(d => prev.includes(d));
       return same ? [] : days;
     });
+  };
+
+  const resetForm = () => {
+    setAdding(false);
+    setEditing(null);
+    setSchedType('recurring');
+    setSelectedDays([]);
+    setSpecificDate('');
+    setAvailableAt('');
+    setDueBy('');
+    setExpiryPenalty('block');
+    setExpiryPenaltyValue('5');
+    setSelectedUsers(users[0] ? [users[0].id] : []);
+  };
+
+  const startEdit = (g: Group) => {
+    setEditing(g);
+    setAdding(true);
+    setSelectedUsers([g.userId]);
+    setSchedType(g.type);
+    setSelectedDays(g.type === 'recurring' ? [...g.days] : []);
+    if (g.type === 'interval') {
+      setIntervalDays(String(g.interval));
+      setIntervalStart(g.start);
+    }
+    setSpecificDate(g.type === 'oneoff' ? g.date : '');
+    setAvailableAt(g.availableAt ?? '');
+    setDueBy(g.dueBy ?? '');
+    const pen = (g.expiryPenalty as 'block' | 'no_points' | 'penalty') || 'block';
+    setExpiryPenalty(pen);
+    setExpiryPenaltyValue(pen === 'penalty' && g.expiryPenaltyValue ? String(g.expiryPenaltyValue) : '5');
+  };
+
+  // Saving an edit updates schedules IN PLACE, which keeps their completion
+  // history (deleting a schedule deletes it). See planWeeklyEdit.
+  const handleSaveEdit = async (g: Group) => {
+    const userId = selectedUsers[0];
+    if (!userId) return;
+    setSaving(true);
+    try {
+      const common = {
+        assigned_to: userId,
+        available_at: availableAt || undefined,
+        due_by: dueBy || undefined,
+        expiry_penalty: dueBy ? expiryPenalty : 'block',
+        expiry_penalty_value: dueBy && expiryPenalty === 'penalty' ? (parseInt(expiryPenaltyValue) || 0) : 0,
+      };
+      const ops: Promise<unknown>[] = [];
+      if (g.type === 'recurring') {
+        const plan = planWeeklyEdit(g.days, g.scheduleIds, selectedDays);
+        for (const [id, day] of plan.update) ops.push(api.chores.updateSchedule(choreId, id, { ...common, day_of_week: day }));
+        for (const id of plan.remove) ops.push(api.chores.deleteSchedule(choreId, id));
+        for (const day of plan.create) ops.push(api.chores.createSchedule(choreId, { ...common, day_of_week: day }));
+      } else if (g.type === 'interval') {
+        ops.push(api.chores.updateSchedule(choreId, g.scheduleIds[0], {
+          ...common, recurrence_interval: parseInt(intervalDays), recurrence_start: intervalStart,
+        }));
+      } else {
+        ops.push(api.chores.updateSchedule(choreId, g.scheduleIds[0], { ...common, specific_date: specificDate }));
+      }
+      const results = await Promise.allSettled(ops);
+      const failures = results.filter(r => r.status === 'rejected');
+      if (failures.length > 0) {
+        console.error('Some schedule changes failed:', failures);
+      }
+      resetForm();
+      load();
+    } catch (err) {
+      console.error(err);
+    }
+    setSaving(false);
   };
 
   const handleAdd = async () => {
@@ -92,14 +168,7 @@ export const ScheduleManager: React.FC<{
         console.error('Some schedules failed to create:', failures);
       }
 
-      setAdding(false);
-      setSelectedDays([]);
-      setSpecificDate('');
-      setAvailableAt('');
-      setDueBy('');
-      setExpiryPenalty('block');
-      setExpiryPenaltyValue('5');
-      setSelectedUsers(users[0] ? [users[0].id] : []);
+      resetForm();
       load();
     } catch (err) {
       console.error(err);
@@ -162,7 +231,7 @@ export const ScheduleManager: React.FC<{
         <button
           type="button"
           className={ui.btnGhost}
-          onClick={() => setAdding(!adding)}
+          onClick={() => (adding ? resetForm() : setAdding(true))}
           aria-expanded={adding}
         >
           {adding ? <X aria-hidden /> : <Icon name="plus" />}
@@ -178,7 +247,7 @@ export const ScheduleManager: React.FC<{
               {users.map(u => (
                 <PersonToggle key={u.id} user={u} pressed={selectedUsers.includes(u.id)} onClick={() => toggleUser(u.id)} />
               ))}
-              {users.length > 1 && (
+              {users.length > 1 && !editing && (
                 <button
                   type="button"
                   className={ui.chip}
@@ -193,7 +262,7 @@ export const ScheduleManager: React.FC<{
 
           <label className={ui.field}>
             <span className={ui.label} title={t('admin.scheduleManager.scheduleTypeTitle')}>{t('admin.scheduleManager.labelScheduleType')}</span>
-            <select className={ui.input} value={schedType} onChange={e => setSchedType(e.target.value as 'recurring' | 'oneoff' | 'interval')}>
+            <select className={ui.input} value={schedType} disabled={!!editing} onChange={e => setSchedType(e.target.value as 'recurring' | 'oneoff' | 'interval')}>
               <option value="recurring">{t('admin.scheduleManager.optionRecurring')}</option>
               <option value="interval">{t('admin.scheduleManager.optionInterval')}</option>
               <option value="oneoff">{t('admin.scheduleManager.optionOneoff')}</option>
@@ -275,10 +344,14 @@ export const ScheduleManager: React.FC<{
           )}
 
           <div className={ui.actionsEnd}>
-            <button type="button" className={ui.btnPrimary} onClick={handleAdd} disabled={!canAdd || saving}>
-              <Icon name="check" /> {selectedUsers.length > 1
-                ? t('admin.scheduleManager.btnAssignMultiple', { count: selectedUsers.length })
-                : t('admin.scheduleManager.btnAssign')}
+            <button type="button" className={ui.btnPrimary}
+              onClick={() => (editing ? handleSaveEdit(editing) : handleAdd())}
+              disabled={!canAdd || saving}>
+              <Icon name="check" /> {editing
+                ? t('admin.scheduleManager.btnSaveChanges')
+                : selectedUsers.length > 1
+                  ? t('admin.scheduleManager.btnAssignMultiple', { count: selectedUsers.length })
+                  : t('admin.scheduleManager.btnAssign')}
             </button>
           </div>
         </div>
@@ -307,7 +380,17 @@ export const ScheduleManager: React.FC<{
               )}
               <button
                 type="button"
-                className={clsx(ui.iconBtn, ui.iconBtnDanger, styles.itemEnd)}
+                className={clsx(ui.iconBtn, styles.itemEnd)}
+                aria-label={t('admin.scheduleManager.ariaEditSchedule')}
+                title={t('admin.scheduleManager.ariaEditSchedule')}
+                aria-pressed={editing?.key === g.key}
+                onClick={() => startEdit(g)}
+              >
+                <Pencil aria-hidden />
+              </button>
+              <button
+                type="button"
+                className={clsx(ui.iconBtn, ui.iconBtnDanger)}
                 aria-label={t('admin.scheduleManager.ariaDeleteSchedule')}
                 title={t('admin.scheduleManager.ariaDeleteSchedule')}
                 onClick={() => handleDeleteGroup(g.scheduleIds)}

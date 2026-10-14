@@ -141,7 +141,8 @@ Requires an authenticated caller with the `admin` role.
 | `GET` `POST` | `/api/chores` | List / create chores |
 | `GET` `PUT` `DELETE` | `/api/chores/{id}` | Read / update / delete a chore |
 | `GET` `POST` | `/api/chores/{id}/schedules` | List / create schedules |
-| `DELETE` | `/api/chores/{id}/schedules/{scheduleID}` | Delete a schedule |
+| `PUT` | `/api/chores/{id}/schedules/{scheduleID}` | Edit a schedule in place (assignee, day or date, interval, time window, late penalty, multiplier, start/end date); body as for create. Keeps the schedule's completion history, which deleting it removes. `assignment_type` can't be changed |
+| `DELETE` | `/api/chores/{id}/schedules/{scheduleID}` | Delete a schedule, and with it its completion history |
 | `POST` | `/api/schedules/{scheduleID}/excuse` | Excuse a chore and waive its penalty |
 
 ### Approvals

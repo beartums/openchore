@@ -467,7 +467,9 @@
       "scheduleTypeTitle": "Wie oft sich diese Aufgabe wiederholt: wöchentlich an bestimmten Tagen, alle N Tage oder an einem einzelnen Datum.",
       "suffixDays": "Tage",
       "title": "Zeitpläne",
-      "userFallback": "Benutzer {{id}}"
+      "userFallback": "Benutzer {{id}}",
+      "btnSaveChanges": "Änderungen speichern",
+      "ariaEditSchedule": "Zeitplan bearbeiten"
     },
     "settingsTab": {
       "ai": {
